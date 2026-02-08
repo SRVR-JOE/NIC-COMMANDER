@@ -495,6 +495,9 @@ let nics=[], originalNames={};
 async function api(p,m='GET',b=null){const o={method:m};if(b){o.headers={'Content-Type':'application/json'};o.body=JSON.stringify(b);}const r=await fetch(p,o);return r.json();}
 async function fetchNics(){try{const d=await api('/api/nics');nics=Array.isArray(d)?d:[d];originalNames={};nics.forEach(n=>originalNames[n.ifIndex]=n.name);renderAll();document.getElementById('nicCount').textContent=nics.length+' Adapters';}catch(e){toast('error','Failed: '+e.message);}document.getElementById('loadingOverlay').style.opacity='0';document.getElementById('loadingOverlay').style.pointerEvents='none';}
 let profiles=JSON.parse(localStorage.getItem('nicProfiles')||'{}');
+let monitorTargets=[];
+let monitorInterval=null;
+let monitorRunning=false;
 
 function sc(n){if(!n.enabled)return'disabled';if(n.status==='Up')return'up';if(n.status==='Disconnected')return'disconnected';return'down';}
 function sl(n){if(!n.enabled)return'DISABLED';if(n.status==='Up')return n.linkSpeed||'Up';return n.status;}
@@ -554,15 +557,18 @@ async function runTrace(){const t=document.getElementById('traceInput').value.tr
 async function runDns(){const t=document.getElementById('dnsInput').value.trim(),ty=document.getElementById('dnsType').value;if(!t)return;const o=document.getElementById('dnsOutput');o.textContent='Looking up '+t+'...';try{const r=await api('/api/dns','POST',{target:t,type:ty});o.textContent=r.output||'No response';}catch(e){o.textContent='Error: '+e.message;}}
 
 // PORT
-async function runPort(){const h=document.getElementById('portHost').value.trim(),p=document.getElementById('portNum').value.trim();if(!h||!p)return;const o=document.getElementById('portOutput');o.textContent='Scanning '+h+'...';try{const r=await api('/api/portscan','POST',{target:h,ports:p});if(r.results){const sv={21:'ftp',22:'ssh',80:'http',443:'https',445:'smb',3389:'rdp',5568:'sacn',6454:'artnet',4700:'pixera'};let t='PORT       STATE     SERVICE
-';r.results.forEach(x=>{t+=String(x.port).padEnd(10)+' '+x.state.padEnd(9)+' '+(sv[x.port]||'')+'
-';});o.textContent=t;}else o.textContent=r.output||'No response';}catch(e){o.textContent='Error: '+e.message;}}
+async function runPort(){const h=document.getElementById('portHost').value.trim(),p=document.getElementById('portNum').value.trim();if(!h||!p)return;const o=document.getElementById('portOutput');o.textContent='Scanning '+h+'...';try{const r=await api('/api/portscan','POST',{target:h,ports:p});if(r.results){const sv={21:'ftp',22:'ssh',80:'http',443:'https',445:'smb',3389:'rdp',5568:'sacn',6454:'artnet',4700:'pixera'};let t='PORT       STATE     SERVICE\n';r.results.forEach(x=>{t+=String(x.port).padEnd(10)+' '+x.state.padEnd(9)+' '+(sv[x.port]||'')+'\n';});o.textContent=t.trimEnd();}else o.textContent=r.output||'No response';}catch(e){o.textContent='Error: '+e.message;}}
 
 // ARP
-async function runArp(){const o=document.getElementById('arpOutput');o.textContent='Loading...';try{const r=await api('/api/arp');o.textContent=r.output||'No data';}catch(e){o.textContent='Error: '+e.message;}});
-  renderPingGrid();
-  toast('info','Added common targets');
-}
+async function runArp(){const o=document.getElementById('arpOutput');o.textContent='Loading...';try{const r=await api('/api/arp');o.textContent=r.output||'No data';}catch(e){o.textContent='Error: '+e.message;}}
+
+// QUICK COMMANDS
+async function runCmd(cmd){const out=document.getElementById('cmdOutput'),arpOut=document.getElementById('arpOutput');const normalized=cmd==='ipconfig /all'?'ipconfig_all':cmd==='route print'?'route_print':cmd;if(out)out.textContent='Running '+cmd+'...';try{const r=await api('/api/cmd','POST',{cmd:normalized});const msg=r.output||'No response';if(cmd==='arp_flush'){if(arpOut)arpOut.textContent=msg;toast('success','ARP cache flushed');}if(out)out.textContent=msg;}catch(e){const err='Error: '+e.message;if(out)out.textContent=err;if(cmd==='arp_flush'&&arpOut)arpOut.textContent=err;}}
+
+/* ═══ PING MONITOR ═══ */
+function addMonitorTarget(){const addr=document.getElementById('monitorAddInput').value.trim();const label=document.getElementById('monitorAddLabel').value.trim();if(!addr)return;monitorTargets.push({addr,label:label||addr,history:[],lastMs:null,status:'pending',sent:0,recv:0});document.getElementById('monitorAddInput').value='';document.getElementById('monitorAddLabel').value='';renderPingGrid();}
+
+function addPresets(){const presets=[{addr:'192.168.1.1',label:'Default Gateway'},{addr:'10.0.0.1',label:'Media GW'},{addr:'172.16.0.1',label:'Control GW'},{addr:'8.8.8.8',label:'Google DNS'},{addr:'1.1.1.1',label:'Cloudflare DNS'},{addr:'google.com',label:'Google'}];presets.forEach(p=>{if(!monitorTargets.find(t=>t.addr===p.addr)){monitorTargets.push({...p,history:[],lastMs:null,status:'pending',sent:0,recv:0});}});renderPingGrid();toast('info','Added common targets');}
 
 function removeTarget(i){monitorTargets.splice(i,1);renderPingGrid();}
 function clearMonitor(){monitorTargets=[];stopMonitor();renderPingGrid();}

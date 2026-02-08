@@ -192,9 +192,18 @@ async function executeDiscovery() {
     
     // Validate prefix format
     const prefixParts = prefix.split('.');
-    if (prefixParts.length !== 3 || prefixParts.some(p => isNaN(p) || p < 0 || p > 255)) {
+    if (prefixParts.length !== 3) {
         alert('Invalid network prefix. Please use format: 192.168.1');
         return;
+    }
+    
+    // Validate each octet is a valid integer between 0-255
+    for (const part of prefixParts) {
+        const num = parseInt(part, 10);
+        if (isNaN(num) || num < 0 || num > 255 || num.toString() !== part) {
+            alert('Invalid network prefix. Each octet must be a valid integer (0-255)');
+            return;
+        }
     }
     
     discoverBtn.disabled = true;

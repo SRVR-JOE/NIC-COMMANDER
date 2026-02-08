@@ -9,6 +9,7 @@ import os
 import subprocess
 import platform
 import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, render_template, jsonify, request
 import psutil
 import netifaces
@@ -125,43 +126,64 @@ def ping_host(host, count=4):
             'error': str(e)
         }
 
-def discover_devices(network_prefix, timeout=1):
+def check_host(ip, timeout=1):
     """
-    Discover devices on the network by scanning common IP addresses
-    network_prefix: e.g., '192.168.1' to scan 192.168.1.1-254
+    Check if a single host is reachable
+    Returns device info if reachable, None otherwise
     """
-    discovered = []
-    
-    # Scan a limited range for quick discovery
-    for i in range(1, 255):
-        ip = f"{network_prefix}.{i}"
-        try:
+    try:
+        # Quick ping test (single ping)
+        param = '-n' if platform.system().lower() == 'windows' else '-c'
+        wait_param = '-w' if platform.system().lower() == 'windows' else '-W'
+        command = ['ping', param, '1', wait_param, '1', ip]
+        
+        result = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout
+        )
+        
+        if result.returncode == 0:
             # Try to resolve hostname
             try:
                 hostname = socket.gethostbyaddr(ip)[0]
             except:
                 hostname = 'Unknown'
             
-            # Quick ping test (single ping)
-            param = '-n' if platform.system().lower() == 'windows' else '-c'
-            wait_param = '-w' if platform.system().lower() == 'windows' else '-W'
-            command = ['ping', param, '1', wait_param, '1', ip]
-            
-            result = subprocess.run(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=timeout
-            )
-            
-            if result.returncode == 0:
-                discovered.append({
-                    'ip': ip,
-                    'hostname': hostname,
-                    'status': 'up'
-                })
-        except:
-            continue
+            return {
+                'ip': ip,
+                'hostname': hostname,
+                'status': 'up'
+            }
+    except:
+        pass
+    return None
+
+def discover_devices(network_prefix, timeout=1):
+    """
+    Discover devices on the network by scanning common IP addresses
+    Uses parallel scanning for improved performance
+    network_prefix: e.g., '192.168.1' to scan 192.168.1.1-254
+    """
+    discovered = []
+    
+    # Generate list of IPs to scan
+    ips_to_scan = [f"{network_prefix}.{i}" for i in range(1, 255)]
+    
+    # Use ThreadPoolExecutor for parallel scanning (max 50 threads)
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        # Submit all ping tasks
+        future_to_ip = {executor.submit(check_host, ip, timeout): ip for ip in ips_to_scan}
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_ip):
+            result = future.result()
+            if result:
+                discovered.append(result)
+    
+    # Sort by IP address
+    discovered.sort(key=lambda x: [int(octet) for octet in x['ip'].split('.')])
     
     return discovered
 

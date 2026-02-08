@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NIC Commander - Network Interface Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🖧 NIC Commander</h1>
+            <p class="subtitle">Network Interface Card Dashboard</p>
+            <button id="refresh-btn" class="btn btn-primary">🔄 Refresh</button>
+        </header>
+
+        <div id="loading" class="loading">Loading network interfaces...</div>
+        <div id="error" class="error" style="display: none;"></div>
+
+        <section id="nics-section">
+            <h2>Network Interfaces (Up to 8 NICs)</h2>
+            <div id="nics-container" class="nics-grid"></div>
+        </section>
+
+        <section class="tools-section">
+            <div class="tool-card">
+                <h2>🏓 Ping Tool</h2>
+                <div class="tool-content">
+                    <input type="text" id="ping-host" placeholder="Enter host/IP address (e.g., 8.8.8.8)" class="input-field">
+                    <input type="number" id="ping-count" placeholder="Count" value="4" min="1" max="10" class="input-field input-small">
+                    <button id="ping-btn" class="btn btn-secondary">Ping</button>
+                    <div id="ping-result" class="result-box"></div>
+                </div>
+            </div>
+
+            <div class="tool-card">
+                <h2>🔍 Device Discovery</h2>
+                <div class="tool-content">
+                    <input type="text" id="discovery-prefix" placeholder="Network prefix (e.g., 192.168.1)" class="input-field">
+                    <button id="discover-btn" class="btn btn-secondary">Discover Devices</button>
+                    <div id="discovery-status" class="status-text"></div>
+                    <div id="discovery-result" class="result-box"></div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

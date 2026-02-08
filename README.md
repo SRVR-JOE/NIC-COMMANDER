@@ -69,6 +69,11 @@ python app.py
 
 The dashboard will be available at: `http://localhost:5000`
 
+**Note:** For development with debug mode enabled, use:
+```bash
+python app.py --debug
+```
+
 ### Using the Dashboard
 
 1. **View NICs**: The main dashboard automatically displays all network interfaces (up to 8) with their current information.

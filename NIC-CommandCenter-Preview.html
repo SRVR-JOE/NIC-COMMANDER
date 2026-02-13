@@ -117,7 +117,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .adv-footer{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-top:1px solid var(--border);background:rgba(0,0,0,.12)}
 .adv-footer .ft{font-family:'JetBrains Mono';font-size:9.5px;color:var(--text-muted)}
 
-/* ═══ DIAGNOSTICS PAGE ═══ */
+/* === DIAGNOSTICS PAGE === */
 .diag-layout{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:1100px){.diag-layout{grid-template-columns:1fr}}
 .diag-panel{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
@@ -198,8 +198,8 @@ input:disabled{opacity:.35;cursor:not-allowed}
     <div><div class="app-title">NIC <span>Command Center</span></div><div class="app-subtitle">Network Interface Configurator</div></div>
   </div>
   <div class="header-right">
-    <button class="btn" onclick="toast('success','Refreshed');renderAll()">⟳ Refresh</button>
-    <button class="btn btn-primary" onclick="toast('info','Applying all changes...')">⚡ Apply All</button>
+    <button class="btn" onclick="toast('success','Refreshed');renderAll()">&#x27F3; Refresh</button>
+    <button class="btn btn-primary" onclick="toast('info','Applying all changes...')">&#x26A1; Apply All</button>
   </div>
 </div>
 
@@ -212,14 +212,14 @@ input:disabled{opacity:.35;cursor:not-allowed}
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Diagnostics</button>
   <div class="tab-right">
     <label>Profile</label>
-    <select id="profileSelect" style="width:190px" onchange="loadProfile(this.value)"><option value="">— Select Profile —</option></select>
-    <button class="btn btn-sm" onclick="showModal('saveProfileModal')">💾</button>
-    <button class="btn btn-sm" onclick="showManageProfiles()">📁</button>
-    <button class="btn btn-sm btn-success" onclick="executeProfile()">▶ Execute</button>
+    <select id="profileSelect" style="width:190px" onchange="loadProfile(this.value)"><option value="">&mdash; Select Profile &mdash;</option></select>
+    <button class="btn btn-sm" onclick="showModal('saveProfileModal')">&#x1F4BE;</button>
+    <button class="btn btn-sm" onclick="showManageProfiles()">&#x1F4C1;</button>
+    <button class="btn btn-sm btn-success" onclick="executeProfile()">&#x25B6; Execute</button>
   </div>
 </div>
 
-<!-- ═══ QUICK CONFIG ═══ -->
+<!-- === QUICK CONFIG === -->
 <div class="page active" id="page-quick">
   <div class="summary-strip" id="summaryStrip"></div>
   <div class="q-wrap"><table class="q-table">
@@ -228,12 +228,12 @@ input:disabled{opacity:.35;cursor:not-allowed}
   </table></div>
 </div>
 
-<!-- ═══ ADVANCED ═══ -->
+<!-- === ADVANCED === -->
 <div class="page" id="page-advanced">
   <div class="adv-grid" id="advGrid"></div>
 </div>
 
-<!-- ═══ DIAGNOSTICS ═══ -->
+<!-- === DIAGNOSTICS === -->
 <div class="page" id="page-diag">
 
   <!-- PING MONITOR -->
@@ -242,7 +242,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
       <h4>Ping Monitor</h4>
       <span style="font-family:'JetBrains Mono';font-size:10px;color:var(--text-muted)" id="monitorStatus">Stopped</span>
-      <button class="btn btn-sm btn-success" id="monitorToggle" onclick="toggleMonitor()">▶ Start</button>
+      <button class="btn btn-sm btn-success" id="monitorToggle" onclick="toggleMonitor()">&#x25B6; Start</button>
     </div>
     <div class="diag-panel-body">
       <div class="diag-add-row">
@@ -363,13 +363,13 @@ input:disabled{opacity:.35;cursor:not-allowed}
     <span id="nicCount">7 Adapters</span>
     <span>Refreshed: just now</span>
   </div>
-  <span>NIC Command Center v2.0 · PowerShell Backend</span>
+  <span>NIC Command Center v2.0 &middot; PowerShell Backend</span>
 </div>
 
 <!-- SAVE MODAL -->
 <div class="modal-overlay" id="saveProfileModal">
   <div class="modal">
-    <div class="modal-header"><h3>Save Profile</h3><button class="btn btn-icon" onclick="closeModal('saveProfileModal')">✕</button></div>
+    <div class="modal-header"><h3>Save Profile</h3><button class="btn btn-icon" onclick="closeModal('saveProfileModal')">&#x2715;</button></div>
     <div class="modal-body">
       <div class="field"><div class="field-label">Profile Name</div><input type="text" id="profileNameInput" placeholder="e.g., NIN Tour, Festival Main"></div>
       <div class="field"><div class="field-label">Description</div><textarea id="profileDescInput" rows="2" placeholder="Notes..."></textarea></div>
@@ -379,9 +379,9 @@ input:disabled{opacity:.35;cursor:not-allowed}
 </div>
 <div class="modal-overlay" id="manageProfilesModal">
   <div class="modal">
-    <div class="modal-header"><h3>Manage Profiles</h3><button class="btn btn-icon" onclick="closeModal('manageProfilesModal')">✕</button></div>
+    <div class="modal-header"><h3>Manage Profiles</h3><button class="btn btn-icon" onclick="closeModal('manageProfilesModal')">&#x2715;</button></div>
     <div class="modal-body" id="profileList"></div>
-    <div class="modal-footer"><button class="btn btn-sm" onclick="exportProfiles()">↗ Export</button><button class="btn btn-sm">↙ Import</button></div>
+    <div class="modal-footer"><button class="btn btn-sm" onclick="exportProfiles()">&#x2197; Export</button><button class="btn btn-sm">&#x2199; Import</button></div>
   </div>
 </div>
 
@@ -421,24 +421,24 @@ function renderSummary(){
 function renderQuick(){
   const b=document.getElementById('qBody');b.innerHTML='';
   nics.forEach((n,i)=>{const s=sc(n),color=CC[i%CC.length];
-    b.innerHTML+=`<tr style="${!n.enabled?'opacity:.4':''}"><td style="padding:0"><div class="q-color" style="background:${color};height:54px"></div></td><td><div class="q-name"><span class="q-indicator ${s}"></span><input value="${esc(n.name)}" onchange="nics[${i}].name=this.value" spellcheck="false"></div><div class="q-hw">${esc(n.hw)} · ${n.mac}</div></td><td><span class="q-badge ${s}">${esc(sl(n))}</span></td><td><button class="toggle${n.dhcp?' active':''}" onclick="nics[${i}].dhcp=!nics[${i}].dhcp;renderAll()"></button></td><td><input value="${esc(n.ip)}" placeholder="—" onchange="nics[${i}].ip=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.subnet)}" placeholder="—" onchange="nics[${i}].subnet=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.gateway)}" placeholder="—" onchange="nics[${i}].gateway=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns1)}" placeholder="—" onchange="nics[${i}].dns1=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns2)}" placeholder="—" onchange="nics[${i}].dns2=this.value" ${n.dhcp?'disabled':''}></td><td><button class="toggle${n.enabled?' active':''}" onclick="nics[${i}].enabled=!nics[${i}].enabled;renderAll()"></button></td><td><button class="btn btn-sm btn-primary" onclick="toast('success','Applied '+nics[${i}].name)">Apply</button></td></tr>`;
+    b.innerHTML+=`<tr style="${!n.enabled?'opacity:.4':''}"><td style="padding:0"><div class="q-color" style="background:${color};height:54px"></div></td><td><div class="q-name"><span class="q-indicator ${s}"></span><input value="${esc(n.name)}" onchange="nics[${i}].name=this.value" spellcheck="false"></div><div class="q-hw">${esc(n.hw)} &middot; ${n.mac}</div></td><td><span class="q-badge ${s}">${esc(sl(n))}</span></td><td><button class="toggle${n.dhcp?' active':''}" onclick="nics[${i}].dhcp=!nics[${i}].dhcp;renderAll()"></button></td><td><input value="${esc(n.ip)}" placeholder="&mdash;" onchange="nics[${i}].ip=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.subnet)}" placeholder="&mdash;" onchange="nics[${i}].subnet=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.gateway)}" placeholder="&mdash;" onchange="nics[${i}].gateway=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns1)}" placeholder="&mdash;" onchange="nics[${i}].dns1=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns2)}" placeholder="&mdash;" onchange="nics[${i}].dns2=this.value" ${n.dhcp?'disabled':''}></td><td><button class="toggle${n.enabled?' active':''}" onclick="nics[${i}].enabled=!nics[${i}].enabled;renderAll()"></button></td><td><button class="btn btn-sm btn-primary" onclick="toast('success','Applied '+nics[${i}].name)">Apply</button></td></tr>`;
   });
 }
 
 function renderAdvanced(){
   const g=document.getElementById('advGrid');g.innerHTML='';
   nics.forEach((n,i)=>{const s=sc(n),color=CC[i%CC.length];const d=document.createElement('div');d.className='adv-card'+(!n.enabled?' off':'');d.style.setProperty('--nic-color',color);d.style.animationDelay=(i*.06)+'s';
-    d.innerHTML=`<div class="adv-header"><div class="adv-dot ${s}"></div><div style="flex:1;min-width:0"><div class="adv-title">${esc(n.name)}</div><div class="adv-sub">${esc(n.hw)} · ${n.mac} · idx:${n.ifIndex}</div></div><span class="q-badge ${s}">${esc(sl(n))}</span></div><div class="adv-body"><div class="section-label" style="border:none;margin:0">Performance</div><div class="adv-3"><div class="field"><div class="field-label">MTU</div><input value="${esc(n.mtu)}" onchange="nics[${i}].mtu=this.value"></div><div class="field"><div class="field-label">Metric</div><input value="${esc(n.metric)}" placeholder="Auto" onchange="nics[${i}].metric=this.value"></div><div class="field"><div class="field-label">VLAN ID</div><input value="${esc(n.vlan)}" placeholder="None" onchange="nics[${i}].vlan=this.value"></div></div><div class="adv-2"><div class="field"><div class="field-label">Speed / Duplex</div><select onchange="nics[${i}].speedDuplex=this.value">${['Auto Negotiation','10 Mbps Full Duplex','10 Mbps Half Duplex','100 Mbps Full Duplex','100 Mbps Half Duplex','1.0 Gbps Full Duplex','2.5 Gbps Full Duplex'].map(x=>`<option${n.speedDuplex===x?' selected':''}>${x}</option>`).join('')}</select></div><div class="field"><div class="field-label">DNS Suffix</div><input value="${esc(n.dnsSuffix)}" placeholder="corp.local" onchange="nics[${i}].dnsSuffix=this.value"></div></div><div class="section-label">Features</div><div class="toggle-row"><span class="toggle-label">Jumbo Frames</span><button class="toggle${n.jumbo?' active':''}" onclick="nics[${i}].jumbo=!nics[${i}].jumbo;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">Wake on LAN</span><button class="toggle${n.wol?' active':''}" onclick="nics[${i}].wol=!nics[${i}].wol;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">QoS</span><button class="toggle${n.qos?' active':''}" onclick="nics[${i}].qos=!nics[${i}].qos;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">RSS</span><button class="toggle${n.rss?' active':''}" onclick="nics[${i}].rss=!nics[${i}].rss;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">Gratuitous ARP</span><button class="toggle${n.arp?' active':''}" onclick="nics[${i}].arp=!nics[${i}].arp;this.classList.toggle('active')"></button></div><div class="section-label">WINS / NetBIOS</div><div class="field"><div class="field-label">NetBIOS</div><select onchange="nics[${i}].netbios=this.value">${['Default','Enabled','Disabled'].map(x=>`<option${n.netbios===x?' selected':''}>${x}</option>`).join('')}</select></div><div class="toggle-row"><span class="toggle-label">LMHOSTS</span><button class="toggle${n.lmhosts?' active':''}" onclick="nics[${i}].lmhosts=!nics[${i}].lmhosts;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">Register DNS</span><button class="toggle${n.registerDns?' active':''}" onclick="nics[${i}].registerDns=!nics[${i}].registerDns;this.classList.toggle('active')"></button></div><div class="section-label">IPv6</div><div class="toggle-row"><span class="toggle-label">Enable IPv6</span><button class="toggle${n.ipv6?' active':''}" onclick="nics[${i}].ipv6=!nics[${i}].ipv6;this.classList.toggle('active')"></button></div><div class="adv-2"><div class="field"><div class="field-label">IPv6 Addr</div><input value="${esc(n.ipv6addr)}" placeholder="Auto"></div><div class="field"><div class="field-label">Prefix</div><input value="${esc(n.ipv6prefix)}" placeholder="64"></div></div></div><div class="adv-footer"><span class="ft">${n.dhcp?'DHCP':'Static'} · ${esc(n.ip||'—')} / ${esc(n.subnet)}</span><button class="btn btn-sm btn-primary" onclick="toast('success','Applied: '+nics[${i}].name)">Apply</button></div>`;
+    d.innerHTML=`<div class="adv-header"><div class="adv-dot ${s}"></div><div style="flex:1;min-width:0"><div class="adv-title">${esc(n.name)}</div><div class="adv-sub">${esc(n.hw)} &middot; ${n.mac} &middot; idx:${n.ifIndex}</div></div><span class="q-badge ${s}">${esc(sl(n))}</span></div><div class="adv-body"><div class="section-label" style="border:none;margin:0">Performance</div><div class="adv-3"><div class="field"><div class="field-label">MTU</div><input value="${esc(n.mtu)}" onchange="nics[${i}].mtu=this.value"></div><div class="field"><div class="field-label">Metric</div><input value="${esc(n.metric)}" placeholder="Auto" onchange="nics[${i}].metric=this.value"></div><div class="field"><div class="field-label">VLAN ID</div><input value="${esc(n.vlan)}" placeholder="None" onchange="nics[${i}].vlan=this.value"></div></div><div class="adv-2"><div class="field"><div class="field-label">Speed / Duplex</div><select onchange="nics[${i}].speedDuplex=this.value">${['Auto Negotiation','10 Mbps Full Duplex','10 Mbps Half Duplex','100 Mbps Full Duplex','100 Mbps Half Duplex','1.0 Gbps Full Duplex','2.5 Gbps Full Duplex'].map(x=>`<option${n.speedDuplex===x?' selected':''}>${x}</option>`).join('')}</select></div><div class="field"><div class="field-label">DNS Suffix</div><input value="${esc(n.dnsSuffix)}" placeholder="corp.local" onchange="nics[${i}].dnsSuffix=this.value"></div></div><div class="section-label">Features</div><div class="toggle-row"><span class="toggle-label">Jumbo Frames</span><button class="toggle${n.jumbo?' active':''}" onclick="nics[${i}].jumbo=!nics[${i}].jumbo;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">Wake on LAN</span><button class="toggle${n.wol?' active':''}" onclick="nics[${i}].wol=!nics[${i}].wol;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">QoS</span><button class="toggle${n.qos?' active':''}" onclick="nics[${i}].qos=!nics[${i}].qos;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">RSS</span><button class="toggle${n.rss?' active':''}" onclick="nics[${i}].rss=!nics[${i}].rss;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">Gratuitous ARP</span><button class="toggle${n.arp?' active':''}" onclick="nics[${i}].arp=!nics[${i}].arp;this.classList.toggle('active')"></button></div><div class="section-label">WINS / NetBIOS</div><div class="field"><div class="field-label">NetBIOS</div><select onchange="nics[${i}].netbios=this.value">${['Default','Enabled','Disabled'].map(x=>`<option${n.netbios===x?' selected':''}>${x}</option>`).join('')}</select></div><div class="toggle-row"><span class="toggle-label">LMHOSTS</span><button class="toggle${n.lmhosts?' active':''}" onclick="nics[${i}].lmhosts=!nics[${i}].lmhosts;this.classList.toggle('active')"></button></div><div class="toggle-row"><span class="toggle-label">Register DNS</span><button class="toggle${n.registerDns?' active':''}" onclick="nics[${i}].registerDns=!nics[${i}].registerDns;this.classList.toggle('active')"></button></div><div class="section-label">IPv6</div><div class="toggle-row"><span class="toggle-label">Enable IPv6</span><button class="toggle${n.ipv6?' active':''}" onclick="nics[${i}].ipv6=!nics[${i}].ipv6;this.classList.toggle('active')"></button></div><div class="adv-2"><div class="field"><div class="field-label">IPv6 Addr</div><input value="${esc(n.ipv6addr)}" placeholder="Auto"></div><div class="field"><div class="field-label">Prefix</div><input value="${esc(n.ipv6prefix)}" placeholder="64"></div></div></div><div class="adv-footer"><span class="ft">${n.dhcp?'DHCP':'Static'} &middot; ${esc(n.ip||'&mdash;')} / ${esc(n.subnet)}</span><button class="btn btn-sm btn-primary" onclick="toast('success','Applied: '+nics[${i}].name)">Apply</button></div>`;
     g.appendChild(d);
   });
 }
 
 function renderAll(){renderSummary();renderQuick();renderAdvanced();updateProfileSelect();document.getElementById('nicCount').textContent=nics.length+' Adapters';}
 
-/* ═══════════════════════════════════════════
+/* ===========================================
    DIAGNOSTICS - SIMULATED FOR PREVIEW
    In the real .ps1 version these hit /api/ endpoints
-   ═══════════════════════════════════════════ */
+   =========================================== */
 
 // Simulate realistic latency
 function rndMs(base,jitter){return Math.max(1,base+Math.round((Math.random()-0.5)*jitter*2));}
@@ -545,7 +545,7 @@ function runCmd(cmd){
   if(cmd==='flushdns')toast('success','DNS cache flushed');
 }
 
-/* ═══ PING MONITOR ═══ */
+/* === PING MONITOR === */
 let monitorTargets=[];
 let monitorInterval=null;
 let monitorRunning=false;
@@ -587,7 +587,7 @@ function toggleMonitor(){
 function startMonitor(){
   if(!monitorTargets.length){toast('error','Add targets first');return;}
   monitorRunning=true;
-  document.getElementById('monitorToggle').innerHTML='⏸ Stop';
+  document.getElementById('monitorToggle').innerHTML='&#x23F8; Stop';
   document.getElementById('monitorToggle').className='btn btn-sm btn-danger';
   document.getElementById('monitorStatus').textContent='Running';
   document.getElementById('monitorStatus').style.color='var(--green)';
@@ -597,7 +597,7 @@ function startMonitor(){
 function stopMonitor(){
   monitorRunning=false;
   clearInterval(monitorInterval);
-  document.getElementById('monitorToggle').innerHTML='▶ Start';
+  document.getElementById('monitorToggle').innerHTML='&#x25B6; Start';
   document.getElementById('monitorToggle').className='btn btn-sm btn-success';
   document.getElementById('monitorStatus').textContent='Stopped';
   document.getElementById('monitorStatus').style.color='';
@@ -628,10 +628,10 @@ function renderPingGrid(){
     const avg=avgMs.length?Math.round(avgMs.reduce((a,b)=>a+b,0)/avgMs.length):0;
     const lossRate=t.sent?Math.round((1-t.recv/t.sent)*100):0;
     el.innerHTML=`
-      <button class="ping-remove" onclick="removeTarget(${i})">✕</button>
+      <button class="ping-remove" onclick="removeTarget(${i})">&#x2715;</button>
       <div class="ping-target-name"><span class="ping-dot ${t.status}"></span>${esc(t.label)}</div>
       <div class="ping-target-addr">${esc(t.addr)}</div>
-      <div class="ping-target-status ${t.status}">${t.lastMs!==null?t.lastMs+'<span style="font-size:11px;font-weight:400"> ms</span>':t.status==='pending'?'—':'TIMEOUT'}</div>
+      <div class="ping-target-status ${t.status}">${t.lastMs!==null?t.lastMs+'<span style="font-size:11px;font-weight:400"> ms</span>':t.status==='pending'?'&mdash;':'TIMEOUT'}</div>
       <div class="ping-target-bar">${t.history.map(h=>{
         if(h<0)return'<div class="ping-bar fail" style="height:16px"></div>';
         const pct=Math.max(8,Math.round((h/Math.max(maxH,50))*100));
@@ -643,19 +643,19 @@ function renderPingGrid(){
   });
 }
 
-/* ═══ PROFILES ═══ */
-function updateProfileSelect(){const s=document.getElementById('profileSelect'),v=s.value;s.innerHTML='<option value="">— Select Profile —</option>';Object.keys(profiles).forEach(n=>{s.innerHTML+=`<option value="${esc(n)}">${esc(n)}</option>`;});s.value=v;}
+/* === PROFILES === */
+function updateProfileSelect(){const s=document.getElementById('profileSelect'),v=s.value;s.innerHTML='<option value="">&mdash; Select Profile &mdash;</option>';Object.keys(profiles).forEach(n=>{s.innerHTML+=`<option value="${esc(n)}">${esc(n)}</option>`;});s.value=v;}
 function saveProfile(){const name=document.getElementById('profileNameInput').value.trim(),desc=document.getElementById('profileDescInput').value.trim();if(!name){toast('error','Enter a name');return;}profiles[name]={nics:JSON.parse(JSON.stringify(nics)),desc,date:new Date().toISOString()};localStorage.setItem('nicProfiles',JSON.stringify(profiles));updateProfileSelect();document.getElementById('profileSelect').value=name;closeModal('saveProfileModal');document.getElementById('profileNameInput').value='';document.getElementById('profileDescInput').value='';toast('success','Profile "'+name+'" saved');}
 function loadProfile(name){if(!name||!profiles[name])return;nics=JSON.parse(JSON.stringify(profiles[name].nics));renderAll();toast('info','Loaded "'+name+'"');}
 function executeProfile(){const name=document.getElementById('profileSelect').value;if(!name){toast('error','Select a profile');return;}loadProfile(name);toast('success','Executing "'+name+'"...');}
-function showManageProfiles(){const list=document.getElementById('profileList'),keys=Object.keys(profiles);if(!keys.length){list.innerHTML='<p style="color:var(--text-muted);font-size:12px">No profiles yet.</p>';}else{list.innerHTML=keys.map(n=>{const p=profiles[n];return`<div class="profile-item"><div><div class="profile-item-name">${esc(n)}</div><div style="font-size:10px;color:var(--text-muted)">${esc(p.desc||'No description')} · ${new Date(p.date).toLocaleDateString()}</div></div><div class="profile-actions"><button class="btn btn-sm" onclick="loadProfile('${esc(n)}');closeModal('manageProfilesModal')">Load</button><button class="btn btn-sm btn-danger" onclick="deleteProfile('${esc(n)}')">Del</button></div></div>`;}).join('');}showModal('manageProfilesModal');}
+function showManageProfiles(){const list=document.getElementById('profileList'),keys=Object.keys(profiles);if(!keys.length){list.innerHTML='<p style="color:var(--text-muted);font-size:12px">No profiles yet.</p>';}else{list.innerHTML=keys.map(n=>{const p=profiles[n];return`<div class="profile-item"><div><div class="profile-item-name">${esc(n)}</div><div style="font-size:10px;color:var(--text-muted)">${esc(p.desc||'No description')} &middot; ${new Date(p.date).toLocaleDateString()}</div></div><div class="profile-actions"><button class="btn btn-sm" onclick="loadProfile('${esc(n)}');closeModal('manageProfilesModal')">Load</button><button class="btn btn-sm btn-danger" onclick="deleteProfile('${esc(n)}')">Del</button></div></div>`;}).join('');}showModal('manageProfilesModal');}
 function deleteProfile(n){delete profiles[n];localStorage.setItem('nicProfiles',JSON.stringify(profiles));showManageProfiles();updateProfileSelect();}
 function exportProfiles(){const b=new Blob([JSON.stringify(profiles,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='nic-profiles.json';a.click();}
 
 function showModal(id){document.getElementById(id).classList.add('show');}
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 document.querySelectorAll('.modal-overlay').forEach(m=>{m.addEventListener('click',e=>{if(e.target===m)closeModal(m.id);});});
-function toast(type,msg){const c=document.getElementById('toasts'),t=document.createElement('div');t.className='toast '+type;t.innerHTML=`<span style="font-weight:600">${{success:'✓',error:'✕',info:'ℹ'}[type]||''}</span> ${msg}`;c.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(40px)';t.style.transition='all .3s';setTimeout(()=>t.remove(),300);},3500);}
+function toast(type,msg){const c=document.getElementById('toasts'),t=document.createElement('div');t.className='toast '+type;t.innerHTML=`<span style="font-weight:600">${{success:'&#x2713;',error:'&#x2715;',info:'&#x2139;'}[type]||''}</span> ${msg}`;c.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(40px)';t.style.transition='all .3s';setTimeout(()=>t.remove(),300);},3500);}
 
 renderAll();
 renderPingGrid();

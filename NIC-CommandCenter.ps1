@@ -1,30 +1,75 @@
 ﻿<#
 .SYNOPSIS
-    NIC Command Center v2.0 - Network Configurator + Diagnostics
+    NIC Command Center v2.1 - Network Configurator + Diagnostics
 .DESCRIPTION
     3-tab web UI: Quick Config, Advanced Settings, Diagnostics
     Auto-detects adapters. All changes applied live via PowerShell.
 .NOTES
     Right-click PowerShell > Run as Administrator > .\NIC-CommandCenter.ps1
+    Optional: .\NIC-CommandCenter.ps1 -Port 9000
 #>
 
 #Requires -RunAsAdministrator
+#Requires -Version 5.1
 
-$Port = 8977
-$Url = "http://localhost:$Port/"
+param([int]$Port = 8977)
+
+$AppVersion = "2.1.0"
+$AppBuildDate = "2026-03-02"
+
+$Url = "http://127.0.0.1:$Port/"
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add($Url)
 try { $listener.Start() } catch {
     Write-Host "ERROR: Could not start on port $Port. Run as Admin." -ForegroundColor Red
     Read-Host "Press Enter to exit"; exit 1
 }
-Write-Host "`n  NIC COMMAND CENTER v2.0" -ForegroundColor Cyan
+
+# Generate CSRF token for session
+$CsrfBytes = New-Object byte[] 32
+$Rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$Rng.GetBytes($CsrfBytes)
+$CsrfToken = [System.Convert]::ToBase64String($CsrfBytes)
+$Rng.Dispose()
+
+# Logging
+$LogPath = Join-Path $PSScriptRoot "NIC-CommandCenter.log"
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    $entry = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Level] $Message"
+    try { Add-Content -Path $LogPath -Value $entry -EA SilentlyContinue } catch {}
+}
+
+Write-Host "`n  NIC COMMAND CENTER v$AppVersion" -ForegroundColor Cyan
 Write-Host "  $Url" -ForegroundColor Green
 Write-Host "  Ctrl+C to stop`n" -ForegroundColor Yellow
 Start-Process $Url
 
+# --- Input Validation ---
+function Test-ValidTarget {
+    param([string]$Target)
+    if ([string]::IsNullOrWhiteSpace($Target)) { return $false }
+    # IPv4
+    if ($Target -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
+        $parts = $Target -split '\.'
+        return ($parts | ForEach-Object { [int]$_ -ge 0 -and [int]$_ -le 255 }) -notcontains $false
+    }
+    # RFC-1123 hostname (letters, digits, hyphens, dots only)
+    return $Target -match '^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+}
+function Test-ValidIPv4 {
+    param([string]$IP)
+    if ([string]::IsNullOrWhiteSpace($IP)) { return $false }
+    $addr = [System.Net.IPAddress]::None
+    return ([System.Net.IPAddress]::TryParse($IP, [ref]$addr) -and $addr.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
+}
+
 function Get-NicDataJson {
-    $adapters = Get-NetAdapter | Sort-Object InterfaceIndex
+    $adapters = Get-NetAdapter -EA SilentlyContinue | Sort-Object InterfaceIndex
+    if (-not $adapters -or $adapters.Count -eq 0) {
+        Write-Host "  WARNING: No network adapters detected" -ForegroundColor Yellow
+        return '[]'
+    }
     $results = @()
     foreach ($a in $adapters) {
         $alias = $a.Name
@@ -43,8 +88,8 @@ function Get-NicDataJson {
         $spd = ($adv | Where { $_.RegistryKeyword -eq '*SpeedDuplex' }).DisplayValue
         $ipv6B = Get-NetAdapterBinding -Name $alias -ComponentID ms_tcpip6 -EA SilentlyContinue
         $gw = ''; if ($ipConfig.IPv4DefaultGateway) { $gw = $ipConfig.IPv4DefaultGateway.NextHop }
-        $prefix = 24; $mask = '255.255.255.0'
-        if ($ipAddr) { $prefix = $ipAddr.PrefixLength; $bits = ('1' * $prefix).PadRight(32,'0')
+        $prefix = ''; $mask = ''
+        if ($ipAddr) { $prefix = $ipAddr.PrefixLength; $bits = ('1' * [Math]::Min($prefix,32)).PadRight(32,'0')
             $mask = "{0}.{1}.{2}.{3}" -f [Convert]::ToInt32($bits.Substring(0,8),2),[Convert]::ToInt32($bits.Substring(8,8),2),[Convert]::ToInt32($bits.Substring(16,8),2),[Convert]::ToInt32($bits.Substring(24,8),2) }
         $mtu = ''; if ($ipIf) { $mtu = $ipIf.NlMtu.ToString() }
         $met = ''; if ($ipIf -and -not $ipIf.AutomaticMetric) { $met = $ipIf.InterfaceMetric.ToString() }
@@ -59,6 +104,8 @@ function Get-NicDataJson {
             speedDuplex=if($spd){$spd}else{'Auto Negotiation'};netbios='Default';arp=$false;lmhosts=$true
         }
     }
+    if ($results.Count -eq 0) { return '[]' }
+    if ($results.Count -eq 1) { return "[$($results | ConvertTo-Json -Depth 5 -Compress)]" }
     return ($results | ConvertTo-Json -Depth 5 -Compress)
 }
 
@@ -66,35 +113,123 @@ function Apply-NicConfig { param([string]$JsonBody)
     $config = $JsonBody | ConvertFrom-Json; $results = @()
     foreach ($nic in $config) { try {
         $alias = $nic.originalName; $newName = $nic.name
+
+        # Validate IP fields before making any changes
+        if (-not $nic.dhcp -and $nic.ip) {
+            if (-not (Test-ValidIPv4 $nic.ip)) { throw "Invalid IP address: $($nic.ip)" }
+            if ($nic.gateway -and -not (Test-ValidIPv4 $nic.gateway)) { throw "Invalid gateway: $($nic.gateway)" }
+            if ($nic.dns1 -and -not (Test-ValidIPv4 $nic.dns1)) { throw "Invalid DNS1: $($nic.dns1)" }
+            if ($nic.dns2 -and -not (Test-ValidIPv4 $nic.dns2)) { throw "Invalid DNS2: $($nic.dns2)" }
+            if ($nic.prefix -lt 0 -or $nic.prefix -gt 32) { throw "Invalid prefix length: $($nic.prefix)" }
+        }
+
         if ($alias -ne $newName) { Rename-NetAdapter -Name $alias -NewName $newName -EA Stop; $alias = $newName }
-        if (-not $nic.enabled) { Disable-NetAdapter -Name $alias -Confirm:$false -EA Stop; $results += @{name=$alias;success=$true;message="Disabled"}; continue }
+        if (-not $nic.enabled) { Disable-NetAdapter -Name $alias -Confirm:$false -EA Stop; Write-Log "Disabled adapter: $alias"; $results += @{name=$alias;success=$true;message="Disabled"}; continue }
         else { $cur = Get-NetAdapter -Name $alias -EA SilentlyContinue; if ($cur.Status -eq 'Disabled') { Enable-NetAdapter -Name $alias -Confirm:$false -EA Stop; Start-Sleep 2 } }
-        if ($nic.dhcp) { Set-NetIPInterface -InterfaceAlias $alias -Dhcp Enabled -EA SilentlyContinue; Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -EA SilentlyContinue }
-        else { Remove-NetIPAddress -InterfaceAlias $alias -Confirm:$false -EA SilentlyContinue; Remove-NetRoute -InterfaceAlias $alias -Confirm:$false -EA SilentlyContinue
-            if ($nic.ip -and $nic.subnet) { $p=@{InterfaceAlias=$alias;IPAddress=$nic.ip;PrefixLength=$nic.prefix;AddressFamily='IPv4'}; if($nic.gateway){$p['DefaultGateway']=$nic.gateway}; New-NetIPAddress @p -EA Stop | Out-Null }
-            $dns=@();if($nic.dns1){$dns+=$nic.dns1};if($nic.dns2){$dns+=$nic.dns2}; if($dns.Count -gt 0){Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses $dns -EA SilentlyContinue} }
-        if($nic.metric -and $nic.metric -ne ''){Set-NetIPInterface -InterfaceAlias $alias -InterfaceMetric ([int]$nic.metric) -AutomaticMetric Disabled -EA SilentlyContinue}
-        else{Set-NetIPInterface -InterfaceAlias $alias -AutomaticMetric Enabled -EA SilentlyContinue}
-        if($nic.dnsSuffix -ne $null){Set-DnsClient -InterfaceAlias $alias -ConnectionSpecificSuffix $nic.dnsSuffix -RegisterThisConnectionsAddress $nic.registerDns -EA SilentlyContinue}
-        if($nic.ipv6){Enable-NetAdapterBinding -Name $alias -ComponentID ms_tcpip6 -EA SilentlyContinue}else{Disable-NetAdapterBinding -Name $alias -ComponentID ms_tcpip6 -EA SilentlyContinue}
+
+        if ($nic.dhcp) {
+            Set-NetIPInterface -InterfaceAlias $alias -Dhcp Enabled -EA Stop
+            Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -EA Stop
+            Write-Log "Set DHCP on adapter: $alias"
+        } else {
+            try { Remove-NetIPAddress -InterfaceAlias $alias -Confirm:$false -EA Stop } catch [Microsoft.PowerShell.Cmdletization.Cim.CimJobException] { <# No addresses to remove #> } catch { if ($_.Exception.Message -notmatch 'No matching') { throw } }
+            try { Remove-NetRoute -InterfaceAlias $alias -Confirm:$false -EA Stop } catch { if ($_.Exception.Message -notmatch 'No matching') { throw } }
+            if ($nic.ip -and $nic.prefix) { $p=@{InterfaceAlias=$alias;IPAddress=$nic.ip;PrefixLength=[int]$nic.prefix;AddressFamily='IPv4'}; if($nic.gateway){$p['DefaultGateway']=$nic.gateway}; New-NetIPAddress @p -EA Stop | Out-Null }
+            $dns=@();if($nic.dns1){$dns+=$nic.dns1};if($nic.dns2){$dns+=$nic.dns2}
+            if($dns.Count -gt 0){Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses $dns -EA Stop}
+            Write-Log "Set static IP on adapter: $alias -> $($nic.ip)/$($nic.prefix)"
+        }
+
+        if($nic.metric -and $nic.metric -ne ''){Set-NetIPInterface -InterfaceAlias $alias -InterfaceMetric ([int]$nic.metric) -AutomaticMetric Disabled -EA Stop}
+        else{Set-NetIPInterface -InterfaceAlias $alias -AutomaticMetric Enabled -EA Stop}
+
+        if(-not [string]::IsNullOrEmpty($nic.dnsSuffix)){
+            Set-DnsClient -InterfaceAlias $alias -ConnectionSpecificSuffix $nic.dnsSuffix -RegisterThisConnectionsAddress ([bool]$nic.registerDns) -EA Stop
+        }
+
+        if($nic.ipv6){Enable-NetAdapterBinding -Name $alias -ComponentID ms_tcpip6 -EA Stop}else{Disable-NetAdapterBinding -Name $alias -ComponentID ms_tcpip6 -EA Stop}
+
+        # Advanced: MTU
+        if($nic.mtu -and $nic.mtu -ne ''){
+            $mtuVal = [int]$nic.mtu
+            if ($mtuVal -ge 576 -and $mtuVal -le 9014) {
+                Set-NetIPInterface -InterfaceAlias $alias -NlMtuBytes $mtuVal -EA Stop
+            }
+        }
+
         $results += @{name=$alias;success=$true;message="Configured OK"}
-    } catch { $results += @{name=$alias;success=$false;message=$_.Exception.Message} } }
+    } catch { Write-Log "APPLY ERROR [$alias]: $($_.Exception.Message)" "ERROR"; $results += @{name=$alias;success=$false;message="Configuration failed"} } }
+    if ($results.Count -eq 0) { return '[]' }
+    if ($results.Count -eq 1) { return "[$($results | ConvertTo-Json -Depth 3 -Compress)]" }
     return ($results | ConvertTo-Json -Depth 3 -Compress)
 }
 
-function Run-Ping { param([string]$J); $d=$J|ConvertFrom-Json; try{$o=ping -n $d.count -w 2000 $d.target 2>&1|Out-String;return(@{success=$true;output=$o}|ConvertTo-Json -Compress)}catch{return(@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress)} }
-function Run-SinglePing { param([string]$J); $d=$J|ConvertFrom-Json; try{$r=Test-Connection -ComputerName $d.target -Count 1 -EA Stop;return(@{success=$true;ms=$r.ResponseTime;target=$d.target}|ConvertTo-Json -Compress)}catch{return(@{success=$false;ms=-1;target=$d.target}|ConvertTo-Json -Compress)} }
-function Run-Traceroute { param([string]$J); $d=$J|ConvertFrom-Json; try{$o=tracert -d -w 2000 $d.target 2>&1|Out-String;return(@{success=$true;output=$o}|ConvertTo-Json -Compress)}catch{return(@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress)} }
-function Run-DnsLookup { param([string]$J); $d=$J|ConvertFrom-Json; try{$o=nslookup -type=$($d.type) $d.target 2>&1|Out-String;return(@{success=$true;output=$o}|ConvertTo-Json -Compress)}catch{return(@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress)} }
+function Run-Ping { param([string]$J); $d=$J|ConvertFrom-Json
+    if (-not (Test-ValidTarget $d.target)) { return (@{success=$false;output='Invalid target'}|ConvertTo-Json -Compress) }
+    $count = [Math]::Max(1, [Math]::Min(50, [int]$d.count))
+    try {
+        $r = Test-Connection -ComputerName $d.target -Count $count -EA Stop
+        $arr = @($r)
+        $o = $arr | ForEach-Object {
+            $ms = if ($_.PSObject.Properties['Latency']) { $_.Latency } else { $_.ResponseTime }
+            "Reply from $($_.Address): time=${ms}ms"
+        } | Out-String
+        return (@{success=$true;output=$o}|ConvertTo-Json -Compress)
+    } catch { return (@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress) }
+}
+function Run-SinglePing { param([string]$J); $d=$J|ConvertFrom-Json
+    if (-not (Test-ValidTarget $d.target)) { return (@{success=$false;ms=-1;target=$d.target}|ConvertTo-Json -Compress) }
+    try {
+        $r = Test-Connection -ComputerName $d.target -Count 1 -EA Stop
+        $arr = @($r)
+        $ms = if ($arr[0].PSObject.Properties['Latency']) { $arr[0].Latency } else { $arr[0].ResponseTime }
+        return (@{success=$true;ms=[int]$ms;target=$d.target}|ConvertTo-Json -Compress)
+    } catch { return (@{success=$false;ms=-1;target=$d.target}|ConvertTo-Json -Compress) }
+}
+function Run-Traceroute { param([string]$J); $d=$J|ConvertFrom-Json
+    if (-not (Test-ValidTarget $d.target)) { return (@{success=$false;output='Invalid target'}|ConvertTo-Json -Compress) }
+    try { $o=tracert -d -w 2000 $d.target 2>&1|Out-String; return (@{success=$true;output=$o}|ConvertTo-Json -Compress) }
+    catch { return (@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress) }
+}
+function Run-DnsLookup { param([string]$J); $d=$J|ConvertFrom-Json
+    $allowedTypes = @('A','AAAA','MX','NS','CNAME','TXT','SOA','PTR')
+    if ($d.type -notin $allowedTypes) { return (@{success=$false;output='Invalid record type'}|ConvertTo-Json -Compress) }
+    if (-not (Test-ValidTarget $d.target)) { return (@{success=$false;output='Invalid target'}|ConvertTo-Json -Compress) }
+    try {
+        $r = Resolve-DnsName -Name $d.target -Type $d.type -EA Stop
+        $o = $r | Format-List | Out-String
+        return (@{success=$true;output=$o}|ConvertTo-Json -Compress)
+    } catch { return (@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress) }
+}
 function Run-PortScan { param([string]$J); $d=$J|ConvertFrom-Json; $res=@()
-    foreach($port in ($d.ports -split ',')){$p=$port.Trim();if(-not $p){continue};try{$tcp=New-Object System.Net.Sockets.TcpClient;$c=$tcp.BeginConnect($d.target,[int]$p,$null,$null);$w=$c.AsyncWaitHandle.WaitOne(1500,$false)
-    if($w -and $tcp.Connected){$res+=@{port=[int]$p;state='OPEN'};$tcp.EndConnect($c)}else{$res+=@{port=[int]$p;state='CLOSED'}};$tcp.Close()}catch{$res+=@{port=[int]$p;state='CLOSED'}}}
+    if (-not (Test-ValidTarget $d.target)) { return (@{success=$false;output='Invalid target'}|ConvertTo-Json -Compress) }
+    $portCount = 0
+    foreach($port in ($d.ports -split ',')){
+        $p=$port.Trim(); if(-not $p){continue}
+        $portNum = 0
+        if (-not [int]::TryParse($p, [ref]$portNum) -or $portNum -lt 1 -or $portNum -gt 65535) { $res+=@{port=$p;state='INVALID'}; continue }
+        $portCount++; if ($portCount -gt 100) { break }
+        $tcp = $null
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $c=$tcp.BeginConnect($d.target,$portNum,$null,$null)
+            $w=$c.AsyncWaitHandle.WaitOne(1500,$false)
+            try { $tcp.EndConnect($c) } catch {}
+            if($w -and $tcp.Connected){$res+=@{port=$portNum;state='OPEN'}}else{$res+=@{port=$portNum;state='CLOSED'}}
+        } catch { $res+=@{port=$portNum;state='ERROR'} }
+        finally { if ($tcp) { $tcp.Close(); $tcp.Dispose() } }
+    }
     return(@{success=$true;results=$res}|ConvertTo-Json -Depth 3 -Compress) }
 function Run-ArpTable { try{$o=arp -a 2>&1|Out-String;return(@{success=$true;output=$o}|ConvertTo-Json -Compress)}catch{return(@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress)} }
 function Run-Command { param([string]$J); $d=$J|ConvertFrom-Json; try{$o=switch($d.cmd){'ipconfig'{ipconfig 2>&1|Out-String}'ipconfig_all'{ipconfig /all 2>&1|Out-String}'route_print'{route print 2>&1|Out-String}'netstat'{netstat -an 2>&1|Out-String}'flushdns'{ipconfig /flushdns 2>&1|Out-String}'release'{ipconfig /release 2>&1|Out-String}'renew'{ipconfig /renew 2>&1|Out-String}'arp_flush'{netsh interface ip delete arpcache 2>&1|Out-String}default{"Unknown: $($d.cmd)"}};return(@{success=$true;output=$o}|ConvertTo-Json -Compress)}catch{return(@{success=$false;output=$_.Exception.Message}|ConvertTo-Json -Compress)} }
 
 function Send-Resp { param($r,$j,$ct="application/json; charset=utf-8"); $r.ContentType=$ct;$b=[System.Text.Encoding]::UTF8.GetBytes($j);$r.ContentLength64=$b.Length;$r.OutputStream.Write($b,0,$b.Length) }
-function Read-Body { param($r); $rd=New-Object System.IO.StreamReader($r.InputStream,$r.ContentEncoding);$b=$rd.ReadToEnd();$rd.Close();return $b }
+function Read-Body { param($r)
+    if ($r.ContentLength64 -gt 1MB) { throw "Request body too large" }
+    $rd=New-Object System.IO.StreamReader($r.InputStream,$r.ContentEncoding);$b=$rd.ReadToEnd();$rd.Close()
+    if ($b.Length -gt 1MB) { throw "Request body too large" }
+    return $b
+}
 
 
 $HTML = @'
@@ -104,7 +239,7 @@ $HTML = @'
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NIC Command Center</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- System fonts: no external CDN dependency -->
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -119,18 +254,18 @@ $HTML = @'
   --radius:8px;--radius-lg:12px;
 }
 html{font-size:13px}
-body{font-family:'Outfit',sans-serif;background:var(--bg-deep);color:var(--text-primary);min-height:100vh;overflow-x:hidden;padding-bottom:44px}
+body{font-family:'Segoe UI Variable','Segoe UI',system-ui,sans-serif;background:var(--bg-deep);color:var(--text-primary);min-height:100vh;overflow-x:hidden;padding-bottom:44px}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border-light);border-radius:3px}
 
 .header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:var(--bg-panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
 .header-left{display:flex;align-items:center;gap:14px}
-.logo{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),var(--cyan));border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#fff;font-family:'JetBrains Mono'}
+.logo{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),var(--cyan));border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#fff;font-family:'Cascadia Code','Consolas',monospace}
 .app-title{font-size:16px;font-weight:700;letter-spacing:-.5px}
-.app-title span{color:var(--accent-bright);font-family:'JetBrains Mono';font-weight:600}
-.app-subtitle{font-size:9.5px;color:var(--text-muted);font-family:'JetBrains Mono';letter-spacing:1px;text-transform:uppercase}
+.app-title span{color:var(--accent-bright);font-family:'Cascadia Code','Consolas',monospace;font-weight:600}
+.app-subtitle{font-size:9.5px;color:var(--text-muted);font-family:'Cascadia Code','Consolas',monospace;letter-spacing:1px;text-transform:uppercase}
 .header-right{display:flex;align-items:center;gap:8px}
 
-.btn{font-family:'Outfit';padding:7px 14px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-card);color:var(--text-primary);cursor:pointer;font-size:11.5px;font-weight:500;transition:all .15s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn{font-family:'Segoe UI',system-ui,sans-serif;padding:7px 14px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-card);color:var(--text-primary);cursor:pointer;font-size:11.5px;font-weight:500;transition:all .15s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .btn:hover{border-color:var(--border-light);background:var(--bg-input)}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 0 20px var(--accent-glow)}
 .btn-primary:hover{background:var(--accent-bright)}
@@ -141,15 +276,15 @@ body{font-family:'Outfit',sans-serif;background:var(--bg-deep);color:var(--text-
 .btn-icon{width:28px;height:28px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius)}
 
 .tab-bar{display:flex;align-items:center;gap:0;padding:0 24px;background:var(--bg-panel);border-bottom:1px solid var(--border)}
-.tab-btn{padding:11px 22px;font-family:'Outfit';font-size:12.5px;font-weight:500;color:var(--text-muted);border:none;background:none;cursor:pointer;position:relative;transition:color .2s;display:flex;align-items:center;gap:7px}
+.tab-btn{padding:11px 22px;font-family:'Segoe UI',system-ui,sans-serif;font-size:12.5px;font-weight:500;color:var(--text-muted);border:none;background:none;cursor:pointer;position:relative;transition:color .2s;display:flex;align-items:center;gap:7px}
 .tab-btn:hover{color:var(--text-secondary)}
 .tab-btn.active{color:var(--accent-bright);font-weight:600}
 .tab-btn.active::after{content:'';position:absolute;bottom:-1px;left:8px;right:8px;height:2px;background:var(--accent);border-radius:2px 2px 0 0}
 .tab-btn svg{width:15px;height:15px}
 .tab-right{margin-left:auto;display:flex;align-items:center;gap:8px;padding:6px 0}
-.tab-right label{font-size:10px;font-family:'JetBrains Mono';color:var(--text-muted);text-transform:uppercase;letter-spacing:1px}
+.tab-right label{font-size:10px;font-family:'Cascadia Code','Consolas',monospace;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px}
 
-select,input,textarea{font-family:'JetBrains Mono',monospace;font-size:12px;padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);outline:none;transition:border-color .2s;width:100%}
+select,input,textarea{font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:12px;padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);outline:none;transition:border-color .2s;width:100%}
 select:focus,input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
 select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238b92a5'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
 input:disabled{opacity:.35;cursor:not-allowed}
@@ -160,13 +295,13 @@ input:disabled{opacity:.35;cursor:not-allowed}
 /* SUMMARY */
 .summary-strip{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
 .s-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:10px 16px;display:flex;align-items:center;gap:10px;flex:1;min-width:120px}
-.s-num{font-family:'JetBrains Mono';font-size:24px;font-weight:700;line-height:1}
+.s-num{font-family:'Cascadia Code','Consolas',monospace;font-size:24px;font-weight:700;line-height:1}
 .s-label{font-size:10.5px;color:var(--text-muted);line-height:1.3}
 
 /* QUICK TABLE */
-.q-wrap{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+.q-wrap{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow-x:auto;overflow-y:hidden}
 .q-table{width:100%;border-collapse:collapse}
-.q-table thead th{font-family:'JetBrains Mono';font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.7px;color:var(--text-muted);padding:10px 12px;text-align:left;background:var(--bg-panel);border-bottom:1px solid var(--border);white-space:nowrap}
+.q-table thead th{font-family:'Cascadia Code','Consolas',monospace;font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.7px;color:var(--text-muted);padding:10px 12px;text-align:left;background:var(--bg-panel);border-bottom:1px solid var(--border);white-space:nowrap}
 .q-table tbody tr{transition:background .15s}
 .q-table tbody tr:hover{background:rgba(59,130,246,0.03)}
 .q-table tbody tr:not(:last-child) td{border-bottom:1px solid var(--border)}
@@ -177,11 +312,11 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .q-indicator.up{background:var(--green);box-shadow:0 0 6px var(--green)}
 .q-indicator.disconnected{background:var(--amber);box-shadow:0 0 5px var(--amber)}
 .q-indicator.down,.q-indicator.disabled{background:var(--text-muted)}
-.q-name input{font-family:'Outfit'!important;font-weight:600;font-size:12.5px!important;background:transparent!important;border-color:transparent!important;padding:3px 6px!important;width:100%;min-width:100px}
+.q-name input{font-family:'Segoe UI',system-ui,sans-serif!important;font-weight:600;font-size:12.5px!important;background:transparent!important;border-color:transparent!important;padding:3px 6px!important;width:100%;min-width:100px}
 .q-name input:hover{border-color:var(--border)!important}
 .q-name input:focus{border-color:var(--accent)!important;background:var(--bg-input)!important}
-.q-hw{font-family:'JetBrains Mono';font-size:8.5px;color:var(--text-muted);padding-left:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px}
-.q-badge{font-family:'JetBrains Mono';font-size:9px;padding:2px 7px;border-radius:3px;white-space:nowrap;display:inline-block}
+.q-hw{font-family:'Cascadia Code','Consolas',monospace;font-size:8.5px;color:var(--text-muted);padding-left:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px}
+.q-badge{font-family:'Cascadia Code','Consolas',monospace;font-size:9px;padding:2px 7px;border-radius:3px;white-space:nowrap;display:inline-block}
 .q-badge.up{background:var(--green-glow);color:var(--green);border:1px solid rgba(34,197,94,0.15)}
 .q-badge.down,.q-badge.disabled{background:rgba(90,97,120,0.12);color:var(--text-muted);border:1px solid rgba(90,97,120,0.15)}
 .q-badge.disconnected{background:var(--amber-glow);color:var(--amber);border:1px solid rgba(245,158,11,0.15)}
@@ -195,7 +330,8 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .adv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:14px}
 .adv-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;transition:all .3s;position:relative;animation:cardIn .4s ease both}
 .adv-card:hover{border-color:var(--border-light);box-shadow:0 4px 20px rgba(0,0,0,.3)}
-.adv-card.off{opacity:.4}
+.adv-card.off{opacity:.4;pointer-events:none}
+.adv-card.off .adv-footer{pointer-events:auto}
 .adv-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--nic-color);opacity:.7}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes cardIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
@@ -205,18 +341,18 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .adv-dot.disconnected{background:var(--amber);box-shadow:0 0 6px var(--amber)}
 .adv-dot.down,.adv-dot.disabled{background:var(--text-muted)}
 .adv-title{font-size:13px;font-weight:600;flex:1}
-.adv-sub{font-family:'JetBrains Mono';font-size:9.5px;color:var(--text-muted)}
+.adv-sub{font-family:'Cascadia Code','Consolas',monospace;font-size:9.5px;color:var(--text-muted)}
 .adv-body{padding:12px 14px;display:flex;flex-direction:column;gap:6px}
 .adv-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .adv-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .field{display:flex;flex-direction:column;gap:3px}
-.field-label{font-size:9.5px;font-family:'JetBrains Mono';color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
-.section-label{font-size:9.5px;font-family:'JetBrains Mono';color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;padding:6px 0 2px;border-top:1px solid var(--border);margin-top:4px}
+.field-label{font-size:9.5px;font-family:'Cascadia Code','Consolas',monospace;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
+.section-label{font-size:9.5px;font-family:'Cascadia Code','Consolas',monospace;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;padding:6px 0 2px;border-top:1px solid var(--border);margin-top:4px}
 .section-label:first-child{border-top:none;margin-top:0}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:3px 0}
 .toggle-label{font-size:11.5px;color:var(--text-secondary)}
 .adv-footer{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-top:1px solid var(--border);background:rgba(0,0,0,.12)}
-.adv-footer .ft{font-family:'JetBrains Mono';font-size:9.5px;color:var(--text-muted)}
+.adv-footer .ft{font-family:'Cascadia Code','Consolas',monospace;font-size:9.5px;color:var(--text-muted)}
 
 /* === DIAGNOSTICS PAGE === */
 .diag-layout{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -228,7 +364,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .diag-panel-body{padding:14px 16px}
 .diag-input-row{display:flex;gap:8px;margin-bottom:10px}
 .diag-input-row input{flex:1}
-.diag-output{background:var(--bg-deep);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-family:'JetBrains Mono';font-size:11px;line-height:1.7;color:var(--text-secondary);min-height:140px;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.diag-output{background:var(--bg-deep);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-family:'Cascadia Code','Consolas',monospace;font-size:11px;line-height:1.7;color:var(--text-secondary);min-height:140px;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
 .diag-output .ping-ok{color:var(--green)}
 .diag-output .ping-fail{color:var(--red)}
 .diag-output .ping-warn{color:var(--amber)}
@@ -242,8 +378,8 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .ping-target.fail{border-color:rgba(239,68,68,0.3)}
 .ping-target.pending{border-color:rgba(245,158,11,0.3)}
 .ping-target-name{font-size:11.5px;font-weight:600;margin-bottom:2px;display:flex;align-items:center;gap:6px}
-.ping-target-addr{font-family:'JetBrains Mono';font-size:10px;color:var(--text-muted)}
-.ping-target-status{font-family:'JetBrains Mono';font-size:20px;font-weight:700;margin-top:6px}
+.ping-target-addr{font-family:'Cascadia Code','Consolas',monospace;font-size:10px;color:var(--text-muted)}
+.ping-target-status{font-family:'Cascadia Code','Consolas',monospace;font-size:20px;font-weight:700;margin-top:6px}
 .ping-target-status.ok{color:var(--green)}
 .ping-target-status.fail{color:var(--red)}
 .ping-target-status.pending{color:var(--amber)}
@@ -258,7 +394,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .ping-dot.pending{background:var(--amber)}
 .ping-remove{position:absolute;top:6px;right:6px;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:2px;line-height:1}
 .ping-remove:hover{color:var(--red)}
-.ping-stats{font-family:'JetBrains Mono';font-size:9px;color:var(--text-muted);margin-top:4px;display:flex;gap:8px}
+.ping-stats{font-family:'Cascadia Code','Consolas',monospace;font-size:9px;color:var(--text-muted);margin-top:4px;display:flex;gap:8px}
 
 /* FULL WIDTH PANELS */
 .diag-full{grid-column:1/-1}
@@ -268,7 +404,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
 
 /* MODALS */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .3s}
-.modal-overlay.show{opacity:1;pointer-events:all}
+.modal-overlay.show{opacity:1;pointer-events:auto}
 .modal{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-lg);width:520px;max-width:92vw;max-height:80vh;overflow-y:auto;transform:translateY(20px);transition:transform .3s}
 .modal-overlay.show .modal{transform:translateY(0)}
 .modal-header{padding:18px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
@@ -276,7 +412,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .modal-body{padding:18px 20px;display:flex;flex-direction:column;gap:10px}
 .modal-footer{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
 .profile-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-input);gap:10px}
-.profile-item-name{font-family:'JetBrains Mono';font-size:12px;font-weight:500}
+.profile-item-name{font-family:'Cascadia Code','Consolas',monospace;font-size:12px;font-weight:500}
 .profile-actions{display:flex;gap:4px}
 
 .toast-container{position:fixed;bottom:52px;right:24px;z-index:300;display:flex;flex-direction:column;gap:8px}
@@ -284,7 +420,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
 .toast.success{border-color:var(--green)}.toast.error{border-color:var(--red)}.toast.info{border-color:var(--accent)}
 @keyframes slideIn{from{transform:translateX(100px);opacity:0}to{transform:translateX(0);opacity:1}}
 
-.status-bar{padding:7px 24px;background:var(--bg-panel);border-top:1px solid var(--border);position:fixed;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;font-family:'JetBrains Mono';font-size:10px;color:var(--text-muted);z-index:100}
+.status-bar{padding:7px 24px;background:var(--bg-panel);border-top:1px solid var(--border);position:fixed;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;font-family:'Cascadia Code','Consolas',monospace;font-size:10px;color:var(--text-muted);z-index:100}
 .status-left{display:flex;align-items:center;gap:16px}
 .status-dot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:4px;background:var(--green)}
 
@@ -300,7 +436,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
     <div><div class="app-title">NIC <span>Command Center</span></div><div class="app-subtitle">Network Interface Configurator</div></div>
   </div>
   <div class="header-right">
-    <button class="btn" onclick="toast('success','Refreshed');renderAll()">&#x27F3; Refresh</button>
+    <button class="btn" onclick="fetchNics()">&#x27F3; Refresh</button>
     <button class="btn btn-primary" onclick="applyAll()">&#x26A1; Apply All</button>
   </div>
 </div>
@@ -325,7 +461,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
 <div class="page active" id="page-quick">
   <div class="summary-strip" id="summaryStrip"></div>
   <div class="q-wrap"><table class="q-table">
-    <thead><tr><th style="width:4px;padding:0"></th><th>Adapter</th><th>Status</th><th>DHCP</th><th>IP Address</th><th>Subnet Mask</th><th>Gateway</th><th>DNS 1</th><th>DNS 2</th><th>Enable</th><th></th></tr></thead>
+    <thead><tr><th style="width:4px;padding:0"></th><th scope="col">Adapter</th><th scope="col">Status</th><th scope="col">DHCP</th><th scope="col">IP Address</th><th scope="col">Subnet Mask</th><th scope="col">Gateway</th><th scope="col">DNS 1</th><th scope="col">DNS 2</th><th scope="col">Enable</th><th></th></tr></thead>
     <tbody id="qBody"></tbody>
   </table></div>
 </div>
@@ -343,7 +479,7 @@ input:disabled{opacity:.35;cursor:not-allowed}
     <div class="diag-panel-header">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
       <h4>Ping Monitor</h4>
-      <span style="font-family:'JetBrains Mono';font-size:10px;color:var(--text-muted)" id="monitorStatus">Stopped</span>
+      <span style="font-family:'Cascadia Code','Consolas',monospace;font-size:10px;color:var(--text-muted)" id="monitorStatus">Stopped</span>
       <button class="btn btn-sm btn-success" id="monitorToggle" onclick="toggleMonitor()">&#x25B6; Start</button>
     </div>
     <div class="diag-panel-body">
@@ -461,17 +597,17 @@ input:disabled{opacity:.35;cursor:not-allowed}
 
 <div class="status-bar">
   <div class="status-left">
-    <span><span class="status-dot"></span>Connected</span>
-    <span id="nicCount">7 Adapters</span>
-    <span>Refreshed: just now</span>
+    <span><span class="status-dot" id="statusDot"></span><span id="statusText">Connecting...</span></span>
+    <span id="nicCount">0 Adapters</span>
+    <span id="refreshTime">Refreshed: &mdash;</span>
   </div>
-  <span>NIC Command Center v2.0 &middot; PowerShell Backend</span>
+  <span>NIC Command Center v%%VERSION%% &middot; PowerShell Backend</span>
 </div>
 
 <!-- SAVE MODAL -->
-<div class="modal-overlay" id="saveProfileModal">
-  <div class="modal">
-    <div class="modal-header"><h3>Save Profile</h3><button class="btn btn-icon" onclick="closeModal('saveProfileModal')">&#x2715;</button></div>
+<div class="modal-overlay" id="saveProfileModal" role="presentation">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="saveProfileTitle">
+    <div class="modal-header"><h3 id="saveProfileTitle">Save Profile</h3><button class="btn btn-icon" onclick="closeModal('saveProfileModal')">&#x2715;</button></div>
     <div class="modal-body">
       <div class="field"><div class="field-label">Profile Name</div><input type="text" id="profileNameInput" placeholder="e.g., NIN Tour, Festival Main"></div>
       <div class="field"><div class="field-label">Description</div><textarea id="profileDescInput" rows="2" placeholder="Notes..."></textarea></div>
@@ -479,11 +615,11 @@ input:disabled{opacity:.35;cursor:not-allowed}
     <div class="modal-footer"><button class="btn" onclick="closeModal('saveProfileModal')">Cancel</button><button class="btn btn-primary" onclick="saveProfile()">Save</button></div>
   </div>
 </div>
-<div class="modal-overlay" id="manageProfilesModal">
-  <div class="modal">
-    <div class="modal-header"><h3>Manage Profiles</h3><button class="btn btn-icon" onclick="closeModal('manageProfilesModal')">&#x2715;</button></div>
+<div class="modal-overlay" id="manageProfilesModal" role="presentation">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="manageProfilesTitle">
+    <div class="modal-header"><h3 id="manageProfilesTitle">Manage Profiles</h3><button class="btn btn-icon" onclick="closeModal('manageProfilesModal')">&#x2715;</button></div>
     <div class="modal-body" id="profileList"></div>
-    <div class="modal-footer"><button class="btn btn-sm" onclick="exportProfiles()">&#x2197; Export</button><button class="btn btn-sm">&#x2199; Import</button></div>
+    <div class="modal-footer"><button class="btn btn-sm" onclick="exportProfiles()">&#x2197; Export</button><button class="btn btn-sm" onclick="importProfiles()">&#x2199; Import</button></div>
   </div>
 </div>
 
@@ -492,8 +628,8 @@ input:disabled{opacity:.35;cursor:not-allowed}
 <script>
 const CC=['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899'];
 let nics=[], originalNames={};
-async function api(p,m='GET',b=null){const o={method:m};if(b){o.headers={'Content-Type':'application/json'};o.body=JSON.stringify(b);}const r=await fetch(p,o);return r.json();}
-async function fetchNics(){try{const d=await api('/api/nics');nics=Array.isArray(d)?d:[d];originalNames={};nics.forEach(n=>originalNames[n.ifIndex]=n.name);renderAll();document.getElementById('nicCount').textContent=nics.length+' Adapters';}catch(e){toast('error','Failed: '+e.message);}document.getElementById('loadingOverlay').style.opacity='0';document.getElementById('loadingOverlay').style.pointerEvents='none';}
+async function api(p,m='GET',b=null){const o={method:m,headers:{'X-CSRF-Token':'%%CSRF%%'}};if(b){o.headers['Content-Type']='application/json';o.body=JSON.stringify(b);}const r=await fetch(p,o);if(!r.ok){let msg='Server error '+r.status;try{const e=await r.json();msg=e.error||msg;}catch{}throw new Error(msg);}return r.json();}
+async function fetchNics(){try{const d=await api('/api/nics');nics=Array.isArray(d)?d:[d];originalNames={};nics.forEach(n=>originalNames[n.ifIndex]=n.name);renderAll();document.getElementById('nicCount').textContent=nics.length+' Adapters';document.getElementById('statusDot').style.background='var(--green)';document.getElementById('statusText').textContent='Connected';document.getElementById('refreshTime').textContent='Refreshed: '+new Date().toLocaleTimeString();document.getElementById('loadingOverlay').style.opacity='0';document.getElementById('loadingOverlay').style.pointerEvents='none';toast('success','Refreshed');}catch(e){toast('error','Failed to load: '+e.message);document.getElementById('statusDot').style.background='var(--red)';document.getElementById('statusText').textContent='Error';const ov=document.getElementById('loadingOverlay');if(ov.style.opacity!=='0'){ov.querySelector('div:last-child').textContent='Connection failed. Retrying...';setTimeout(fetchNics,3000);}}}
 let profiles=JSON.parse(localStorage.getItem('nicProfiles')||'{}');
 let monitorTargets=[];
 let monitorInterval=null;
@@ -501,7 +637,9 @@ let monitorRunning=false;
 
 function sc(n){if(!n.enabled)return'disabled';if(n.status==='Up')return'up';if(n.status==='Disconnected')return'disconnected';return'down';}
 function sl(n){if(!n.enabled)return'DISABLED';if(n.status==='Up')return n.linkSpeed||'Up';return n.status;}
-function esc(s){return s==null?'':String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+function esc(s){return s==null?'':String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/'/g,'&#x27;');}
+function subnetToPrefix(mask){return mask.split('.').reduce((a,o)=>a+parseInt(o).toString(2).split('').filter(b=>b==='1').length,0);}
+function validateIP(v){if(!v)return true;return /^(\d{1,3}\.){3}\d{1,3}$/.test(v)&&v.split('.').every(n=>parseInt(n)<=255);}
 
 function switchTab(t){document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+t));}
 
@@ -517,10 +655,11 @@ function renderSummary(){
 }
 
 function renderQuick(){
-  const b=document.getElementById('qBody');b.innerHTML='';
+  const b=document.getElementById('qBody');let html='';
   nics.forEach((n,i)=>{const s=sc(n),color=CC[i%CC.length];
-    b.innerHTML+=`<tr style="${!n.enabled?'opacity:.4':''}"><td style="padding:0"><div class="q-color" style="background:${color};height:54px"></div></td><td><div class="q-name"><span class="q-indicator ${s}"></span><input value="${esc(n.name)}" onchange="nics[${i}].name=this.value" spellcheck="false"></div><div class="q-hw">${esc(n.hw)} &middot; ${n.mac}</div></td><td><span class="q-badge ${s}">${esc(sl(n))}</span></td><td><button class="toggle${n.dhcp?' active':''}" onclick="nics[${i}].dhcp=!nics[${i}].dhcp;renderAll()"></button></td><td><input value="${esc(n.ip)}" placeholder="&mdash;" onchange="nics[${i}].ip=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.subnet)}" placeholder="&mdash;" onchange="nics[${i}].subnet=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.gateway)}" placeholder="&mdash;" onchange="nics[${i}].gateway=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns1)}" placeholder="&mdash;" onchange="nics[${i}].dns1=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns2)}" placeholder="&mdash;" onchange="nics[${i}].dns2=this.value" ${n.dhcp?'disabled':''}></td><td><button class="toggle${n.enabled?' active':''}" onclick="nics[${i}].enabled=!nics[${i}].enabled;renderAll()"></button></td><td><button class="btn btn-sm btn-primary" onclick="applySingle(${i})">Apply</button></td></tr>`;
+    html+=`<tr style="${!n.enabled?'opacity:.4':''}"><td style="padding:0"><div class="q-color" style="background:${color};height:54px"></div></td><td><div class="q-name"><span class="q-indicator ${s}"></span><input value="${esc(n.name)}" aria-label="Name for ${esc(n.name)}" onchange="nics[${i}].name=this.value" spellcheck="false"></div><div class="q-hw">${esc(n.hw)} &middot; ${n.mac}</div></td><td><span class="q-badge ${s}">${esc(sl(n))}</span></td><td><button class="toggle${n.dhcp?' active':''}" role="switch" aria-checked="${n.dhcp}" aria-label="DHCP for ${esc(n.name)}" onclick="nics[${i}].dhcp=!nics[${i}].dhcp;renderAll()"></button></td><td><input value="${esc(n.ip)}" placeholder="&mdash;" aria-label="IP for ${esc(n.name)}" onchange="nics[${i}].ip=this.value;if(!validateIP(this.value))this.style.borderColor='var(--red)';else this.style.borderColor=''" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.subnet)}" placeholder="&mdash;" aria-label="Subnet for ${esc(n.name)}" onchange="nics[${i}].subnet=this.value;nics[${i}].prefix=subnetToPrefix(this.value)" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.gateway)}" placeholder="&mdash;" aria-label="Gateway for ${esc(n.name)}" onchange="nics[${i}].gateway=this.value;if(this.value&&!validateIP(this.value))this.style.borderColor='var(--red)';else this.style.borderColor=''" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns1)}" placeholder="&mdash;" aria-label="DNS1 for ${esc(n.name)}" onchange="nics[${i}].dns1=this.value" ${n.dhcp?'disabled':''}></td><td><input value="${esc(n.dns2)}" placeholder="&mdash;" aria-label="DNS2 for ${esc(n.name)}" onchange="nics[${i}].dns2=this.value" ${n.dhcp?'disabled':''}></td><td><button class="toggle${n.enabled?' active':''}" role="switch" aria-checked="${n.enabled}" aria-label="Enable ${esc(n.name)}" onclick="nics[${i}].enabled=!nics[${i}].enabled;renderAll()"></button></td><td><button class="btn btn-sm btn-primary" onclick="applySingle(${i})">Apply</button></td></tr>`;
   });
+  b.innerHTML=html;
 }
 
 function renderAdvanced(){
@@ -535,7 +674,7 @@ function renderAdvanced(){
 function buildPayload(ix){return ix.map(i=>{const n=nics[i];return{...n,originalName:originalNames[n.ifIndex]||n.name};});}
 async function applySingle(i){toast('info','Applying '+nics[i].name+'...');try{const r=await api('/api/apply','POST',buildPayload([i]));const a=Array.isArray(r)?r:[r];a.forEach(x=>toast(x.success?'success':'error',x.name+': '+x.message));setTimeout(fetchNics,1500);}catch(e){toast('error',e.message);}}
 async function applyAll(){toast('info','Applying all...');try{const r=await api('/api/apply','POST',buildPayload(nics.map((_,i)=>i)));const a=Array.isArray(r)?r:[r];let ok=0;a.forEach(x=>{if(x.success)ok++;else toast('error',x.name+': '+x.message);});if(ok)toast('success',ok+' configured');setTimeout(fetchNics,2000);}catch(e){toast('error',e.message);}}
-async function refreshAll(){await fetchNics();toast('success','Refreshed');}
+
 
 function renderAll(){renderSummary();renderQuick();renderAdvanced();updateProfileSelect();document.getElementById('nicCount').textContent=nics.length+' Adapters';}
 
@@ -584,18 +723,17 @@ function startMonitor(){
   document.getElementById('monitorStatus').textContent='Running';
   document.getElementById('monitorStatus').style.color='var(--green)';
   doPingRound();
-  monitorInterval=setInterval(doPingRound,3000);
 }
 function stopMonitor(){
   monitorRunning=false;
-  clearInterval(monitorInterval);
+  clearTimeout(monitorInterval);
   document.getElementById('monitorToggle').innerHTML='&#x25B6; Start';
   document.getElementById('monitorToggle').className='btn btn-sm btn-success';
   document.getElementById('monitorStatus').textContent='Stopped';
   document.getElementById('monitorStatus').style.color='';
 }
 
-async function doPingRound(){const ps=monitorTargets.map(async t=>{t.sent++;try{const r=await api('/api/singleping','POST',{target:t.addr});if(r.success&&r.ms>=0){t.history.push(r.ms);t.lastMs=r.ms;t.recv++;t.status='ok';}else{t.history.push(-1);t.lastMs=null;t.status='fail';}}catch{t.history.push(-1);t.lastMs=null;t.status='fail';}if(t.history.length>30)t.history.shift();});await Promise.all(ps);renderPingGrid();}
+async function doPingRound(){if(!monitorRunning)return;const ps=monitorTargets.map(async t=>{t.sent++;try{const r=await api('/api/singleping','POST',{target:t.addr});if(r.success&&r.ms>=0){t.history.push(r.ms);t.lastMs=r.ms;t.recv++;t.status='ok';}else{t.history.push(-1);t.lastMs=null;t.status='fail';}}catch{t.history.push(-1);t.lastMs=null;t.status='fail';}if(t.history.length>30)t.history.shift();});await Promise.all(ps);renderPingGrid();if(monitorRunning)monitorInterval=setTimeout(doPingRound,3000);}
 
 function renderPingGrid(){
   const grid=document.getElementById('pingGrid');
@@ -626,17 +764,19 @@ function renderPingGrid(){
 
 /* === PROFILES === */
 function updateProfileSelect(){const s=document.getElementById('profileSelect'),v=s.value;s.innerHTML='<option value="">&mdash; Select Profile &mdash;</option>';Object.keys(profiles).forEach(n=>{s.innerHTML+=`<option value="${esc(n)}">${esc(n)}</option>`;});s.value=v;}
-function saveProfile(){const name=document.getElementById('profileNameInput').value.trim(),desc=document.getElementById('profileDescInput').value.trim();if(!name){toast('error','Enter a name');return;}profiles[name]={nics:JSON.parse(JSON.stringify(nics)),desc,date:new Date().toISOString()};localStorage.setItem('nicProfiles',JSON.stringify(profiles));updateProfileSelect();document.getElementById('profileSelect').value=name;closeModal('saveProfileModal');document.getElementById('profileNameInput').value='';document.getElementById('profileDescInput').value='';toast('success','Profile "'+name+'" saved');}
+function saveProfile(){const name=document.getElementById('profileNameInput').value.trim(),desc=document.getElementById('profileDescInput').value.trim();if(!name){toast('error','Enter a name');return;}profiles[name]={nics:JSON.parse(JSON.stringify(nics)),desc,date:new Date().toISOString()};try{localStorage.setItem('nicProfiles',JSON.stringify(profiles));}catch(e){toast('error','Storage full. Delete old profiles.');return;}updateProfileSelect();document.getElementById('profileSelect').value=name;closeModal('saveProfileModal');document.getElementById('profileNameInput').value='';document.getElementById('profileDescInput').value='';toast('success','Profile "'+name+'" saved');}
 function loadProfile(name){if(!name||!profiles[name])return;nics=JSON.parse(JSON.stringify(profiles[name].nics));renderAll();toast('info','Loaded "'+name+'"');}
-function executeProfile(){const name=document.getElementById('profileSelect').value;if(!name){toast('error','Select a profile');return;}loadProfile(name);toast('success','Executing "'+name+'"...');}
-function showManageProfiles(){const list=document.getElementById('profileList'),keys=Object.keys(profiles);if(!keys.length){list.innerHTML='<p style="color:var(--text-muted);font-size:12px">No profiles yet.</p>';}else{list.innerHTML=keys.map(n=>{const p=profiles[n];return`<div class="profile-item"><div><div class="profile-item-name">${esc(n)}</div><div style="font-size:10px;color:var(--text-muted)">${esc(p.desc||'No description')} &middot; ${new Date(p.date).toLocaleDateString()}</div></div><div class="profile-actions"><button class="btn btn-sm" onclick="loadProfile('${esc(n)}');closeModal('manageProfilesModal')">Load</button><button class="btn btn-sm btn-danger" onclick="deleteProfile('${esc(n)}')">Del</button></div></div>`;}).join('');}showModal('manageProfilesModal');}
+async function executeProfile(){const name=document.getElementById('profileSelect').value;if(!name){toast('error','Select a profile');return;}if(!profiles[name])return;nics=JSON.parse(JSON.stringify(profiles[name].nics));renderAll();toast('info','Executing "'+name+'"...');await applyAll();}
+function showManageProfiles(){const list=document.getElementById('profileList'),keys=Object.keys(profiles);if(!keys.length){list.innerHTML='<p style="color:var(--text-muted);font-size:12px">No profiles yet.</p>';}else{list.innerHTML='';keys.forEach(n=>{const p=profiles[n];const item=document.createElement('div');item.className='profile-item';item.innerHTML=`<div><div class="profile-item-name">${esc(n)}</div><div style="font-size:10px;color:var(--text-muted)">${esc(p.desc||'No description')} &middot; ${new Date(p.date).toLocaleDateString()}</div></div><div class="profile-actions"><button class="btn btn-sm load-btn">Load</button><button class="btn btn-sm btn-danger del-btn">Del</button></div>`;item.querySelector('.load-btn').addEventListener('click',()=>{loadProfile(n);closeModal('manageProfilesModal');});item.querySelector('.del-btn').addEventListener('click',()=>deleteProfile(n));list.appendChild(item);});}showModal('manageProfilesModal');}
 function deleteProfile(n){delete profiles[n];localStorage.setItem('nicProfiles',JSON.stringify(profiles));showManageProfiles();updateProfileSelect();}
-function exportProfiles(){const b=new Blob([JSON.stringify(profiles,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='nic-profiles.json';a.click();}
+function exportProfiles(){const b=new Blob([JSON.stringify(profiles,null,2)],{type:'application/json'});const url=URL.createObjectURL(b);const a=document.createElement('a');a.href=url;a.download='nic-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function importProfiles(){const input=document.createElement('input');input.type='file';input.accept='.json';input.onchange=e=>{const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{try{const imported=JSON.parse(ev.target.result);Object.assign(profiles,imported);try{localStorage.setItem('nicProfiles',JSON.stringify(profiles));}catch(se){toast('error','Storage full');}showManageProfiles();toast('success','Imported '+Object.keys(imported).length+' profile(s)');}catch{toast('error','Invalid JSON file');}};reader.readAsText(file);};input.click();}
 
-function showModal(id){document.getElementById(id).classList.add('show');}
+function showModal(id){const ov=document.getElementById(id);ov.classList.add('show');const f=ov.querySelector('input,button,select,textarea');if(f)f.focus();}
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 document.querySelectorAll('.modal-overlay').forEach(m=>{m.addEventListener('click',e=>{if(e.target===m)closeModal(m.id);});});
-function toast(type,msg){const c=document.getElementById('toasts'),t=document.createElement('div');t.className='toast '+type;t.innerHTML=`<span style="font-weight:600">${{success:'&#x2713;',error:'&#x2715;',info:'&#x2139;'}[type]||''}</span> ${msg}`;c.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(40px)';t.style.transition='all .3s';setTimeout(()=>t.remove(),300);},3500);}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-overlay.show').forEach(m=>closeModal(m.id));});
+function toast(type,msg){const safeType=['success','error','info'].includes(type)?type:'info';const c=document.getElementById('toasts'),t=document.createElement('div');t.className='toast '+safeType;const icon=document.createElement('span');icon.style.fontWeight='600';icon.textContent={success:'\u2713',error:'\u2715',info:'\u2139'}[safeType]||'';const txt=document.createTextNode(' '+msg);t.appendChild(icon);t.appendChild(txt);c.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(40px)';t.style.transition='all .3s';setTimeout(()=>t.remove(),300);},3500);}
 
 fetchNics();
 renderPingGrid();
@@ -646,17 +786,40 @@ renderPingGrid();
 
 '@
 
+# Inject CSRF token and version into HTML
+$ServedHTML = $HTML.Replace('%%CSRF%%', $CsrfToken).Replace('%%VERSION%%', $AppVersion)
+
 try {
     while ($listener.IsListening) {
         $ctx = $listener.GetContext()
         $req = $ctx.Request; $res = $ctx.Response; $path = $req.Url.AbsolutePath
-        $res.Headers.Add("Access-Control-Allow-Origin","*")
+
+        # CORS: restrict to same origin only
+        $origin = $req.Headers["Origin"]
+        if ($origin -eq "http://127.0.0.1:$Port") {
+            $res.Headers.Add("Access-Control-Allow-Origin", "http://127.0.0.1:$Port")
+        }
         $res.Headers.Add("Access-Control-Allow-Methods","GET,POST,OPTIONS")
-        $res.Headers.Add("Access-Control-Allow-Headers","Content-Type")
+        $res.Headers.Add("Access-Control-Allow-Headers","Content-Type,X-CSRF-Token")
+        $res.Headers.Add("X-Content-Type-Options","nosniff")
+        $res.Headers.Add("X-Frame-Options","DENY")
         if ($req.HttpMethod -eq "OPTIONS") { $res.StatusCode=200;$res.Close();continue }
+
+        # CSRF check for POST requests
+        if ($req.HttpMethod -eq "POST") {
+            $requestToken = $req.Headers["X-CSRF-Token"]
+            if ($requestToken -ne $CsrfToken) {
+                $res.StatusCode = 403; Send-Resp $res '{"error":"Forbidden"}'; $res.Close(); continue
+            }
+        }
+
         try { switch ($path) {
-            "/" { Send-Resp $res $HTML "text/html; charset=utf-8"; Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] UI served" -ForegroundColor DarkGray }
+            "/" {
+                $res.Headers.Add("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'")
+                Send-Resp $res $ServedHTML "text/html; charset=utf-8"; Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] UI served" -ForegroundColor DarkGray
+            }
             "/api/nics" { Send-Resp $res (Get-NicDataJson); Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] GET nics" -ForegroundColor DarkGray }
+            "/api/version" { Send-Resp $res (@{version=$AppVersion;buildDate=$AppBuildDate}|ConvertTo-Json -Compress) }
             "/api/apply" { $b=Read-Body $req; Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Applying..." -ForegroundColor Yellow; Send-Resp $res (Apply-NicConfig -JsonBody $b); Write-Host "  Done" -ForegroundColor Green }
             "/api/ping" { $b=Read-Body $req; Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Ping" -ForegroundColor Cyan; Send-Resp $res (Run-Ping -J $b) }
             "/api/singleping" { $b=Read-Body $req; Send-Resp $res (Run-SinglePing -J $b) }
@@ -666,7 +829,17 @@ try {
             "/api/arp" { Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] ARP" -ForegroundColor Cyan; Send-Resp $res (Run-ArpTable) }
             "/api/cmd" { $b=Read-Body $req; Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Cmd" -ForegroundColor Yellow; Send-Resp $res (Run-Command -J $b) }
             default { $res.StatusCode=404; Send-Resp $res '{"error":"Not found"}' }
-        } } catch { Write-Host "  ERROR: $($_.Exception.Message)" -ForegroundColor Red; $res.StatusCode=500; Send-Resp $res "{`"error`":`"$($_.Exception.Message)`"}" }
+        } } catch {
+            $errorId = [System.Guid]::NewGuid().ToString("N").Substring(0,8)
+            Write-Host "  ERROR [$errorId]: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Log "REQUEST ERROR [$errorId]: $($_.Exception.Message)" "ERROR"
+            $res.StatusCode=500; Send-Resp $res "{`"error`":`"Internal error. Reference: $errorId`"}"
+        }
         $res.Close()
     }
-} catch {} finally { $listener.Stop();$listener.Close(); Write-Host "`nStopped." -ForegroundColor Yellow }
+} catch {
+    Write-Host "`n  FATAL ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  $($_.Exception.GetType().FullName)" -ForegroundColor Red
+    Write-Log "FATAL: $($_.Exception.Message)" "ERROR"
+    Read-Host "Press Enter to exit"
+} finally { $listener.Stop();$listener.Close(); Write-Host "`nStopped." -ForegroundColor Yellow }
